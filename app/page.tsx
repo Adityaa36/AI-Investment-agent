@@ -1540,13 +1540,6 @@ export default function Home() {
             </div>
           </div>
         )}
-
-        {/* ── FOOTER ── */}
-        <footer className="terminal-footer">
-          Evident v2.0 <span>·</span> Next.js <span>·</span>
-          LangChain.js <span>·</span> OpenRouter <span>·</span>
-          Alpha Vantage <span>·</span> Serper
-        </footer>
       </div>
     </>
   );
