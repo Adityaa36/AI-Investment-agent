@@ -1,5 +1,7 @@
 # Evident — AI Investment Research Agent
 
+[![Live Demo](https://img.shields.io/badge/Live-Demo-success?style=for-the-badge)](https://ai-investment-agent-some8.vercel.app/)
+
 Evident is an institutional-grade investment research agent built using Next.js (React 19), LangChain.js, OpenRouter, Alpha Vantage, and Google Serper. It acts as an automated investment research terminal, performing deep due diligence, evaluating fundamentals, scraping recent news, assessing risks, and synthesizing side-by-side company comparisons in under 60 seconds.
 
 ---
@@ -13,6 +15,16 @@ Evident is designed to replicate the visual hierarchy and information density of
 * **Institutional Quality Presentation:** All large numbers are formatted professionally (e.g. $1.48T, $125B, $5.2B), decimals are converted to percentages (e.g. 15.8%), and P/E ratios are displayed using the standard x multiplier (e.g. 29.8x).
 * **Interactive Multi-Step Progress Tracker:** Users can see the agent's exact real-time operations, including Serper searches, news evaluation, and financial overview fetching.
 * **Exportable PDF Report:** Generates formatted PDF investment memos directly from the dashboard.
+
+---
+
+## Live Demo
+
+The project is publicly deployed on **Vercel** and can be accessed here:
+
+**Live Application:** https://ai-investment-agent-some8.vercel.app/
+
+Feel free to explore the application and test the AI Investment Research Agent directly without any local setup.
 
 ---
 
