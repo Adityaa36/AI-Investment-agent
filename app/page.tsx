@@ -183,12 +183,14 @@ function MetricsTable({
   }
 
   // Helper to detect if a formatted value is positive or negative
-  function valueClass(key: string, raw: string): string {
+  function valueClass(key: string, raw: any): string {
+    if (raw === undefined || raw === null) return "";
     const lk = key.toLowerCase();
     const isPct =
       lk.includes("growth") || lk.includes("margin") || lk.includes("return");
     if (!isPct) return "";
-    const n = parseFloat(raw.replace(/[^0-9.-]/g, ""));
+    const str = String(raw);
+    const n = parseFloat(str.replace(/[^0-9.-]/g, ""));
     if (isNaN(n)) return "";
     return n > 0 ? "positive" : n < 0 ? "negative" : "";
   }
@@ -248,6 +250,209 @@ function BullBear({ reasoning }: { reasoning: Reasoning }) {
             ? reasoning.risks!.map((r, i) => <li key={i}>{r}</li>)
             : <li style={{ color: "var(--t3)" }}>No data</li>}
         </ul>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════
+   Comparison components
+═══════════════════════════════════════════════════════ */
+
+/** Derive a numeric score for ranking verdicts */
+function verdictScore(verdict: string, confidence: string): number {
+  const v = verdict?.toUpperCase();
+  const c = confidence?.toUpperCase();
+  const base = v === "INVEST" ? 2 : v === "HOLD" ? 1 : 0;
+  const boost = c === "HIGH" ? 0.9 : c === "MEDIUM" ? 0.5 : 0;
+  return base + boost;
+}
+
+/** Determine winner or draw */
+function pickWinner(
+  a: ResearchResult,
+  b: ResearchResult
+): { winner: ResearchResult | null; reason: string } {
+  const sa = verdictScore(a.verdict, a.confidence);
+  const sb = verdictScore(b.verdict, b.confidence);
+  if (Math.abs(sa - sb) < 0.5) {
+    return { winner: null, reason: "Both companies are comparably rated by the AI research agent. Review the detailed metrics below to decide." };
+  }
+  const winner = sa > sb ? a : b;
+  const loser  = sa > sb ? b : a;
+  const wVerdict = winner.verdict?.toUpperCase();
+  const lVerdict = loser.verdict?.toUpperCase();
+  const reason = `${winner.company} (${wVerdict} · ${winner.confidence} confidence) scores higher than ${loser.company} (${lVerdict} · ${loser.confidence} confidence) based on the overall investment verdict and analyst confidence.`;
+  return { winner, reason };
+}
+
+/** A compact per-company column inside the comparison grid */
+function CmpCol({ result }: { result: ResearchResult }) {
+  const vCls = result.verdict?.toUpperCase() === "INVEST" ? "invest" : result.verdict?.toUpperCase() === "HOLD" ? "hold" : "pass";
+  const metrics = result.keyMetrics ?? {};
+  const KEYS = ["peRatio", "profitMargin", "revenueGrowth", "debtToEquity", "roe", "freeCashFlow"];
+
+  function valCls(key: string, raw: any): string {
+    if (raw === undefined || raw === null) return "";
+    const lk = key.toLowerCase();
+    if (!lk.includes("growth") && !lk.includes("margin") && !lk.includes("return") && !lk.includes("roe")) return "";
+    const n = parseFloat(String(raw).replace(/[^0-9.-]/g, ""));
+    if (isNaN(n)) return "";
+    return n > 0 ? "positive" : n < 0 ? "negative" : "";
+  }
+
+  return (
+    <div className="cmp-col">
+      <div className="cmp-col-header">
+        <div>
+          <div className="cmp-col-name">{result.company}</div>
+          <div className="cmp-col-meta">
+            {result.highlights?.stockTicker && <span>{result.highlights.stockTicker}</span>}
+            {result.highlights?.sector && <span>{result.highlights.sector}</span>}
+            {result.highlights?.marketCap && <span>Mkt Cap: {formatMarketCap(result.highlights.marketCap)}</span>}
+          </div>
+        </div>
+        <span className={`cmp-verdict-pill ${vCls}`}>{result.verdict}</span>
+      </div>
+
+      <p className="cmp-summary-text">{result.summary}</p>
+
+      <table className="cmp-metrics-table">
+        <tbody>
+          {KEYS.filter(k => metrics[k] !== undefined).map(k => (
+            <tr key={k}>
+              <td className="cmp-metric-key">{formatLabel(k)}</td>
+              <td className={`cmp-metric-val ${valCls(k, metrics[k])}`}>
+                {formatMetricValue(k, metrics[k])}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Head-to-head metric comparison table */
+function H2HTable({ a, b }: { a: ResearchResult; b: ResearchResult }) {
+  const ROWS: { label: string; key: string; higherIsBetter: boolean }[] = [
+    { label: "Verdict",        key: "__verdict",      higherIsBetter: true },
+    { label: "Confidence",     key: "__confidence",   higherIsBetter: true },
+    { label: "P/E Ratio",      key: "peRatio",        higherIsBetter: false },
+    { label: "Profit Margin",  key: "profitMargin",   higherIsBetter: true  },
+    { label: "Revenue Growth", key: "revenueGrowth",  higherIsBetter: true  },
+    { label: "Debt / Equity",  key: "debtToEquity",   higherIsBetter: false },
+    { label: "ROE",            key: "roe",            higherIsBetter: true  },
+  ];
+
+  const safeNum = (v: any) => { const n = parseFloat(String(v).replace(/[^0-9.-]/g, "")); return isNaN(n) ? null : n; };
+
+  function getCells(row: typeof ROWS[0]) {
+    if (row.key === "__verdict") {
+      const sa = verdictScore(a.verdict, a.confidence);
+      const sb = verdictScore(b.verdict, b.confidence);
+      const aWin = sa > sb + 0.4; const bWin = sb > sa + 0.4;
+      return {
+        aFmt: a.verdict, bFmt: b.verdict,
+        aCls: aWin ? "winner-cell" : bWin ? "loser-cell" : "tie-cell",
+        bCls: bWin ? "winner-cell" : aWin ? "loser-cell" : "tie-cell",
+      };
+    }
+    if (row.key === "__confidence") {
+      const order = ["LOW", "MEDIUM", "HIGH"];
+      const ia = order.indexOf(a.confidence?.toUpperCase()); const ib = order.indexOf(b.confidence?.toUpperCase());
+      const aWin = ia > ib; const bWin = ib > ia;
+      return {
+        aFmt: a.confidence, bFmt: b.confidence,
+        aCls: aWin ? "winner-cell" : bWin ? "loser-cell" : "tie-cell",
+        bCls: bWin ? "winner-cell" : aWin ? "loser-cell" : "tie-cell",
+      };
+    }
+    const aRaw = (a.keyMetrics ?? {})[row.key]; const bRaw = (b.keyMetrics ?? {})[row.key];
+    const aFmt = formatMetricValue(row.key, aRaw); const bFmt = formatMetricValue(row.key, bRaw);
+    const aN = safeNum(aRaw); const bN = safeNum(bRaw);
+    if (aN === null || bN === null) return { aFmt, bFmt, aCls: "", bCls: "" };
+    const aWins = row.higherIsBetter ? aN > bN : aN < bN;
+    const bWins = row.higherIsBetter ? bN > aN : bN < aN;
+    return {
+      aFmt, bFmt,
+      aCls: aWins ? "winner-cell" : bWins ? "loser-cell" : "tie-cell",
+      bCls: bWins ? "winner-cell" : aWins ? "loser-cell" : "tie-cell",
+    };
+  }
+
+  return (
+    <div className="h2h-card">
+      <div className="h2h-title">Head-to-Head Metrics</div>
+      <table className="h2h-table">
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th>{a.company}</th>
+            <th>{b.company}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {ROWS.map(row => {
+            const { aFmt, bFmt, aCls, bCls } = getCells(row);
+            return (
+              <tr key={row.key}>
+                <td>{row.label}</td>
+                <td className={aCls}>{aFmt}</td>
+                <td className={bCls}>{bFmt}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Full comparison report */
+function ComparisonView({
+  a, b,
+  onReset,
+}: {
+  a: ResearchResult;
+  b: ResearchResult;
+  onReset: () => void;
+}) {
+  const { winner, reason } = pickWinner(a, b);
+  const winCls = winner
+    ? (winner.verdict?.toUpperCase() === "INVEST" ? "invest" : winner.verdict?.toUpperCase() === "HOLD" ? "hold" : "pass")
+    : "draw";
+
+  return (
+    <div className="compare-report">
+      {/* Winner summary */}
+      <div className="winner-card">
+        <div className="winner-left">
+          <div className="winner-eyebrow">AI Comparison Result</div>
+          <div className="winner-name">
+            {winner ? `${winner.company} — Stronger Pick` : "Too Close to Call"}
+          </div>
+          <div className="winner-reason">{reason}</div>
+        </div>
+        <span className={`winner-badge ${winCls}`}>
+          {winner ? winner.verdict : "DRAW"}
+        </span>
+      </div>
+
+      {/* Head to head table */}
+      <H2HTable a={a} b={b} />
+
+      {/* Side by side columns */}
+      <div className="compare-grid">
+        <CmpCol result={a} />
+        <CmpCol result={b} />
+      </div>
+
+      <div className="action-bar">
+        <div className="action-left" />
+        <button className="action-btn secondary" onClick={onReset}>
+          ← New Comparison
+        </button>
       </div>
     </div>
   );
@@ -705,8 +910,15 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ companyName: company }),
       });
-      const data: ResearchResult = await res.json();
-      if (!res.ok) throw new Error((data as { error?: string }).error || "Research failed.");
+      const contentType = res.headers.get("content-type") || "";
+      const data = contentType.includes("application/json")
+        ? await res.json() as ResearchResult
+        : { error: await res.text() } as ResearchResult;
+      if (!res.ok) {
+        throw new Error(
+          (data as { error?: string }).error || `Research failed with HTTP ${res.status}.`
+        );
+      }
       setResult(data);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Unexpected error.");
@@ -717,6 +929,60 @@ export default function Home() {
   }, [companyName]);
 
   const onKey = (e: React.KeyboardEvent) => { if (e.key === "Enter") handleResearch(); };
+
+  const resetToLanding = () => {
+    setResult(null);
+    setCompanyName("");
+    setError(null);
+    setLoading(false);
+    setCompareMode(false);
+    setCompareResults(null);
+    setCompareError(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  // ── Compare mode state ─────────────────────────────────────
+  const [compareMode,    setCompareMode]    = useState(false);
+  const [companyB,       setCompanyB]       = useState("");
+  const [compareResults, setCompareResults] = useState<[ResearchResult, ResearchResult] | null>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError,   setCompareError]   = useState<string | null>(null);
+
+  const handleCompare = useCallback(async () => {
+    const cA = companyName.trim();
+    const cB = companyB.trim();
+    if (!cA || !cB) return;
+    setCompareLoading(true);
+    setCompareResults(null);
+    setCompareError(null);
+    try {
+      const fetchOne = async (name: string): Promise<ResearchResult> => {
+        const res = await fetch("/api/research", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ companyName: name }),
+        });
+        const ct = res.headers.get("content-type") || "";
+        const data = ct.includes("application/json")
+          ? await res.json() as ResearchResult
+          : { error: await res.text() } as ResearchResult;
+        if (!res.ok) throw new Error((data as { error?: string }).error || `HTTP ${res.status}`);
+        return data;
+      };
+      const [rA, rB] = await Promise.all([fetchOne(cA), fetchOne(cB)]);
+      setCompareResults([rA, rB]);
+    } catch (e: unknown) {
+      setCompareError(e instanceof Error ? e.message : "Comparison failed.");
+    } finally {
+      setCompareLoading(false);
+    }
+  }, [companyName, companyB]);
+
+  const resetCompare = () => {
+    setCompareResults(null);
+    setCompareError(null);
+    setCompareLoading(false);
+  };
 
   // ── Derived values (pure frontend) ─────────────────────────
   const isInvest  = result?.verdict?.toUpperCase() === "INVEST";
@@ -753,15 +1019,26 @@ export default function Home() {
     ? extractSources(result.researchSteps)
     : [];
 
+  // Hero mode = landing state with no active research/compare
+  const isHeroMode =
+    !compareMode && !loading && !result && !error;
+
   /* ── Render ─────────────────────────────────────────────── */
   return (
     <>
       {/* ── TOP BAR ── */}
       <header className="topbar">
-        <div className="topbar-brand">
-          <span className="topbar-logo">AIRA</span>
+        <div
+          className="topbar-brand"
+          onClick={resetToLanding}
+          style={{ cursor: "pointer" }}
+        >
+          <span className="topbar-logo">
+            <span className="topbar-logo-mark" />
+            Evident
+          </span>
           <div className="topbar-divider" />
-          <span className="topbar-subtitle">AI Investment Research Agent</span>
+          <span className="topbar-subtitle">AI Investment Research</span>
         </div>
         <div className="topbar-right">
           <span className="live-dot" />
@@ -773,58 +1050,267 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="shell">
+      <div className={`shell${isHeroMode ? "" : " shell-active"}`}>
 
-        {/* ── COMMAND BAR ── */}
-        <div className="cmd-bar">
-          <span className="cmd-prefix">&gt;</span>
-          <input
-            id="company-input"
-            type="text"
-            className="cmd-input"
-            placeholder="Enter company name or ticker (e.g., Infosys, AAPL, RELIANCE)..."
-            value={companyName}
-            onChange={(e) => setCompanyName(e.target.value)}
-            onKeyDown={onKey}
-            disabled={loading}
-            autoFocus
-          />
-          <button
-            id="research-btn"
-            className="cmd-run"
-            onClick={() => handleResearch()}
-            disabled={loading || !companyName.trim()}
-          >
-            {loading ? "RUNNING..." : "ANALYZE"}
-          </button>
-        </div>
+        {/* ══════════════════════════════════════════════════
+            HERO — shown only on landing (no active research)
+        ══════════════════════════════════════════════════ */}
+        {isHeroMode && (
+          <div className="hero">
 
-        <div className="ticker-row">
-          {QUICK_TICKERS.map((t) => (
-            <button
-              key={t}
-              className="ticker-chip"
-              onClick={() => { setCompanyName(t); handleResearch(t); }}
-              disabled={loading}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
+            {/* Animated financial chart background */}
+            <svg className="hero-bg-chart" viewBox="0 0 1400 280" fill="none" preserveAspectRatio="none">
+              <defs>
+                <linearGradient id="lg1" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%"  stopColor="#4c78ff" stopOpacity="0" />
+                  <stop offset="25%" stopColor="#4c78ff" stopOpacity="0.5" />
+                  <stop offset="100%" stopColor="#4c78ff" stopOpacity="0.3" />
+                </linearGradient>
+                <linearGradient id="lg2" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%"  stopColor="#1f8f60" stopOpacity="0" />
+                  <stop offset="30%" stopColor="#1f8f60" stopOpacity="0.4" />
+                  <stop offset="100%" stopColor="#1f8f60" stopOpacity="0.2" />
+                </linearGradient>
+                <linearGradient id="lg3" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0%"  stopColor="#b57b2f" stopOpacity="0" />
+                  <stop offset="40%" stopColor="#b57b2f" stopOpacity="0.3" />
+                  <stop offset="100%" stopColor="#b57b2f" stopOpacity="0.15" />
+                </linearGradient>
+                <linearGradient id="fillLg1" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%"  stopColor="#4c78ff" stopOpacity="0.07" />
+                  <stop offset="100%" stopColor="#4c78ff" stopOpacity="0" />
+                </linearGradient>
+              </defs>
+              {/* Subtle grid lines */}
+              {[70, 140, 210].map(y => (
+                <line key={y} x1="0" y1={y} x2="1400" y2={y} stroke="#e4eaf2" strokeWidth="0.6" />
+              ))}
+              {/* Fill under primary line */}
+              <path
+                d="M0,230 C80,210 160,180 260,155 C340,135 390,158 470,140 C560,120 620,90 720,72 C810,56 870,82 960,65 C1050,48 1130,35 1220,30 C1290,26 1350,32 1400,28 L1400,280 L0,280 Z"
+                fill="url(#fillLg1)"
+              />
+              {/* Primary line — main bullish trend */}
+              <path
+                className="chart-path-1"
+                d="M0,230 C80,210 160,180 260,155 C340,135 390,158 470,140 C560,120 620,90 720,72 C810,56 870,82 960,65 C1050,48 1130,35 1220,30 C1290,26 1350,32 1400,28"
+                stroke="url(#lg1)" strokeWidth="2.2" fill="none"
+              />
+              {/* Secondary line */}
+              <path
+                className="chart-path-2"
+                d="M0,255 C100,238 200,218 310,200 C400,185 450,205 540,190 C630,174 700,148 800,138 C890,128 950,148 1050,132 C1140,118 1240,102 1400,95"
+                stroke="url(#lg2)" strokeWidth="1.6" fill="none"
+              />
+              {/* Tertiary line */}
+              <path
+                className="chart-path-3"
+                d="M0,268 C120,255 250,240 380,225 C470,214 510,228 600,216 C700,202 780,182 880,172 C970,162 1060,178 1180,162 C1280,148 1350,138 1400,132"
+                stroke="url(#lg3)" strokeWidth="1.3" fill="none"
+              />
+            </svg>
 
-        {/* ── EMPTY ── */}
-        {!loading && !result && !error && (
-          <div className="empty">
-            <h2>No Active Research</h2>
-            <p>Type a company name and press ANALYZE to begin</p>
-            <div className="empty-kbd">
-              Press <kbd>Enter</kbd> to run analysis
+            {/* Floating insight cards */}
+            <div className="hero-fc hero-fc-1">
+              <div className="hero-fc-header">
+                <span className="hero-fc-ticker">AAPL</span>
+                <span className="hero-fc-pill invest">Invest</span>
+              </div>
+              <div className="hero-fc-meta">
+                <span className="hero-fc-dot" />
+                HIGH · 91% confidence
+              </div>
+            </div>
+
+            <div className="hero-fc hero-fc-2">
+              <div className="hero-fc-header">
+                <span className="hero-fc-ticker">TCS.NS</span>
+                <span className="hero-fc-pill invest">Invest</span>
+              </div>
+              <div className="hero-fc-meta">
+                <span className="hero-fc-dot" />
+                HIGH · 87% confidence
+              </div>
+            </div>
+
+            <div className="hero-fc hero-fc-3">
+              <div className="hero-fc-header">
+                <span className="hero-fc-ticker">MSFT</span>
+                <span className="hero-fc-pill invest">Invest</span>
+              </div>
+              <div className="hero-fc-meta">
+                <span className="hero-fc-dot" />
+                MEDIUM · 74% confidence
+              </div>
+            </div>
+
+            {/* Main content */}
+            <div className="hero-content">
+              <div className="hero-badge">
+                <span className="hero-badge-dot" />
+                Institutional AI Research
+              </div>
+
+              <h1 className="hero-headline">
+                Every investment,<br />
+                <em>researched instantly.</em>
+              </h1>
+
+              <p className="hero-sub">
+                Evident delivers analyst-grade research on any listed company
+                in under 60 seconds — powered by AI, built for serious investors.
+              </p>
+
+              {/* Hero search */}
+              <div className="hero-search-wrap">
+                <div className="hero-search">
+                  <span className="hero-search-prefix">›</span>
+                  <input
+                    id="company-input"
+                    type="text"
+                    className="hero-search-input"
+                    placeholder="Search any company — Infosys, AAPL, RELIANCE..."
+                    value={companyName}
+                    onChange={(e) => setCompanyName(e.target.value)}
+                    onKeyDown={onKey}
+                    disabled={loading}
+                    autoFocus
+                  />
+                  <button
+                    id="research-btn"
+                    className="hero-search-btn"
+                    onClick={() => handleResearch()}
+                    disabled={loading || !companyName.trim()}
+                  >
+                    Analyze
+                  </button>
+                </div>
+              </div>
+
+              {/* Quick tickers */}
+              <div className="hero-tickers">
+                {QUICK_TICKERS.map((t) => (
+                  <button
+                    key={t}
+                    className="hero-ticker-chip"
+                    onClick={() => { setCompanyName(t); handleResearch(t); }}
+                    disabled={loading}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+
+              {/* Compare CTA — clearly separated from tickers */}
+              <div className="hero-compare-row">
+                <span className="hero-compare-or">or</span>
+                <button
+                  className="hero-compare-cta"
+                  onClick={() => setCompareMode(true)}
+                >
+                  <span className="hero-compare-cta-icon">⇄</span>
+                  Compare two companies
+                </button>
+              </div>
             </div>
           </div>
         )}
 
+        {/* ══════════════════════════════════════════════════
+            ACTIVE SHELL — shown when researching / results
+        ══════════════════════════════════════════════════ */}
+        {!isHeroMode && (
+          <>
+            {/* ── MODE TOGGLE ── */}
+            <div className="mode-toggle-bar">
+              <button
+                className={`mode-btn ${!compareMode ? "active" : ""}`}
+                onClick={() => { setCompareMode(false); resetCompare(); }}
+              >
+                Single Research
+              </button>
+              <button
+                className={`mode-btn ${compareMode ? "active" : ""}`}
+                onClick={() => { setCompareMode(true); setResult(null); }}
+              >
+                ⇄ Compare
+              </button>
+            </div>
+
+            {!compareMode ? (
+              <>
+                {/* ── SINGLE COMMAND BAR ── */}
+                <div className="cmd-bar">
+                  <span className="cmd-prefix">&gt;</span>
+                  <input
+                    id="company-input-active"
+                    type="text"
+                    className="cmd-input"
+                    placeholder="Enter company name or ticker..."
+                    value={companyName}
+                    onChange={(e) => setCompanyName(e.target.value)}
+                    onKeyDown={onKey}
+                    disabled={loading}
+                    autoFocus
+                  />
+                  <button
+                    id="research-btn-active"
+                    className="cmd-run"
+                    onClick={() => handleResearch()}
+                    disabled={loading || !companyName.trim()}
+                  >
+                    {loading ? "RUNNING..." : "ANALYZE"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* ── COMPARE INPUT BAR ── */}
+                <div className="compare-bar">
+                  <div className="compare-input-wrap">
+                    <span className="compare-label">A&gt;</span>
+                    <input
+                      className="compare-input"
+                      placeholder="Company A (e.g. TCS)"
+                      value={companyName}
+                      onChange={(e) => setCompanyName(e.target.value)}
+                      disabled={compareLoading}
+                      autoFocus
+                    />
+                  </div>
+                  <div className="compare-input-wrap">
+                    <span className="compare-label">B&gt;</span>
+                    <input
+                      className="compare-input"
+                      placeholder="Company B (e.g. Infosys)"
+                      value={companyB}
+                      onChange={(e) => setCompanyB(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") handleCompare(); }}
+                      disabled={compareLoading}
+                    />
+                  </div>
+                </div>
+                <div className="compare-run-bar">
+                  <button
+                    className="compare-run"
+                    onClick={handleCompare}
+                    disabled={compareLoading || !companyName.trim() || !companyB.trim()}
+                  >
+                    {compareLoading ? "RESEARCHING BOTH..." : "COMPARE"}
+                  </button>
+                  {compareResults && (
+                    <button className="compare-reset" onClick={resetCompare}>
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </>
+        )}
+
         {/* ── LOADING ── */}
-        {loading && (
+        {!compareMode && loading && (
           <div className="loading-pane">
             <div className="progress-track">
               <div className="progress-fill" />
@@ -846,8 +1332,40 @@ export default function Home() {
           </div>
         )}
 
-        {/* ── ERROR ── */}
-        {error && (
+        {/* ── COMPARE LOADING ── */}
+        {compareMode && compareLoading && (
+          <div className="compare-loading">
+            <div className="compare-loading-item">
+              <div className="compare-loading-dot" />
+              <span>Researching <strong>{companyName}</strong>…</span>
+            </div>
+            <span className="compare-loading-vs">VS</span>
+            <div className="compare-loading-item">
+              <div className="compare-loading-dot" />
+              <span>Researching <strong>{companyB}</strong>…</span>
+            </div>
+          </div>
+        )}
+
+        {/* ── COMPARE ERROR ── */}
+        {compareMode && compareError && (
+          <div className="error-bar">
+            <p>ERROR: {compareError}</p>
+            <button className="error-retry" onClick={handleCompare}>RETRY</button>
+          </div>
+        )}
+
+        {/* ── COMPARE RESULT ── */}
+        {compareMode && compareResults && (
+          <ComparisonView
+            a={compareResults[0]}
+            b={compareResults[1]}
+            onReset={resetCompare}
+          />
+        )}
+
+        {/* ── SINGLE ERROR ── */}
+        {!compareMode && error && (
           <div className="error-bar">
             <p>ERROR: {error}</p>
             <button className="error-retry" onClick={() => handleResearch()}>RETRY</button>
@@ -857,7 +1375,7 @@ export default function Home() {
         {/* ══════════════════════════════════════════════════
             REPORT
         ══════════════════════════════════════════════════ */}
-        {result && (
+        {!compareMode && result && (
           <div className="report">
             <div className="summary-grid">
               <section className="summary-card">
@@ -1025,7 +1543,7 @@ export default function Home() {
 
         {/* ── FOOTER ── */}
         <footer className="terminal-footer">
-          AIRA v2.0 <span>·</span> Next.js <span>·</span>
+          Evident v2.0 <span>·</span> Next.js <span>·</span>
           LangChain.js <span>·</span> OpenRouter <span>·</span>
           Alpha Vantage <span>·</span> Serper
         </footer>

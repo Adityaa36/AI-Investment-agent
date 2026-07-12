@@ -95,9 +95,14 @@ const KNOWN_TICKERS: Record<string, string[]> = {
   "hdfc bank": ["HDB", "HDFCBANK.BSE"],
 };
 
-const SYNTHESIS_PROMPT = `You are an institutional investment analyst. Produce a concise, high-signal investment recommendation from the provided evidence.
+const SYNTHESIS_PROMPT = `You are an institutional investment analyst. Produce a concise, high-signal investment recommendation from the provided evidence packet.
 
-Use the evidence packet only. Do not invent numbers. If evidence is missing or stale, lower confidence and say so briefly.
+## Evidence Packet:
+The evidence packet contains web search results, financial data, and news. 
+If the Alpha Vantage financial database did not contain the ticker, the packet will contain web search fallback results under "Financial metrics". You MUST extract the metrics (P/E ratio, market cap, profit margin, revenue growth, debt-to-equity) from these search results. Do not leave them as "N/A" if they are present in the web search results!
+
+## Formatting Rules:
+When outputting financial numbers in the JSON (marketCap, peRatio, revenueGrowth, profitMargin, debtToEquity), ALWAYS prefer raw machine-readable numeric formats (e.g. raw numbers like 4718977352000 instead of "4.72T", 0.158 instead of "15.8%", 0.0395 instead of "3.95%", 0.73 instead of "0.73", 29.8 instead of "29.8x") so that the client application can parse and format them.
 
 Return ONLY valid JSON with this exact shape:
 {
@@ -107,29 +112,25 @@ Return ONLY valid JSON with this exact shape:
   "highlights": {
     "companyOverview": "1 concise paragraph, no more than 70 words",
     "sector": "sector or N/A",
-    "marketCap": "value or N/A",
+    "marketCap": "raw numeric value (e.g. 1500000000000) or N/A",
     "stockTicker": "ticker used or N/A"
   },
   "reasoning": {
     "strengths": ["strongest bull point 1 with numbers when available", "strongest bull point 2", "strongest bull point 3"],
     "risks": ["strongest bear point 1", "strongest bear point 2", "strongest bear point 3"],
-    "financialHealth": "1-2 concise sentences",
-    "growthPotential": "1-2 concise sentences",
-    "competitivePosition": "1-2 concise sentences",
-    "recentDevelopments": "1-2 concise sentences using top news only",
-    "investmentCommittee": "short direct committee-style reasoning for the verdict",
-    "whatWouldChangeOurView": ["trigger 1", "trigger 2", "trigger 3"]
+    "financialHealth": "1-2 concise sentences summarizing the financial position",
+    "growthPotential": "1-2 concise sentences on TAM and prospects",
+    "competitivePosition": "1-2 concise sentences on market share and moat",
+    "recentDevelopments": "1-2 concise sentences using top news only"
   },
   "keyMetrics": {
-    "peRatio": "actual value or N/A",
-    "revenueGrowth": "actual value or N/A",
-    "profitMargin": "actual value or N/A",
-    "debtToEquity": "actual value or N/A"
+    "peRatio": "raw numeric value (e.g. 29.8) or N/A",
+    "revenueGrowth": "raw decimal ratio (e.g. 0.158) or N/A",
+    "profitMargin": "raw decimal ratio (e.g. 0.184) or N/A",
+    "debtToEquity": "raw decimal ratio (e.g. 0.73) or N/A"
   },
   "analystNote": "1-2 concise sentences on the key swing factor"
-}
-
-Style: concise institutional analyst memo. Prefer brevity over repetition.`;
+}`;
 
 function normalizeCompanyName(companyName: string): string {
   return companyName.trim().toLowerCase().replace(/\s+/g, " ");
@@ -247,6 +248,22 @@ async function resolveFinancialData(
     }
   }
 
+  // Fallback to Google Search for key financials if Alpha Vantage fails
+  console.log(`Financial data not found for ${companyName} via Alpha Vantage. Performing web search fallback...`);
+  const query1 = `${companyName} stock valuation metrics PE ratio market cap Yahoo Finance`;
+  const query2 = `${companyName} stock profit margin revenue growth debt to equity Moneycontrol Yahoo Finance`;
+  
+  const [search1, search2] = await Promise.all([
+    searchWeb(query1, { ttlMs: CACHE_TTL_MS.companyProfile, num: 4 }),
+    searchWeb(query2, { ttlMs: CACHE_TTL_MS.companyProfile, num: 4 }),
+  ]);
+  
+  researchSteps.push(step("web_search", { query: query1 }, search1));
+  researchSteps.push(step("web_search", { query: query2 }, search2));
+  
+  // Format the web search results so the LLM knows it is the fallback evidence
+  lastFinancialEvidence = `[WEB SEARCH FALLBACK - Alpha Vantage database did not contain this ticker. The following is web search results for the financial metrics of ${companyName}:]\n\n--- Source 1 (Valuation) ---\n${search1}\n\n--- Source 2 (Growth & Ratios) ---\n${search2}`;
+
   return {
     symbol: lastSymbol,
     financialEvidence: lastFinancialEvidence,
@@ -304,13 +321,51 @@ function coerceResearchResult(
   researchSteps: ResearchStep[],
   metrics: ResearchResult["optimizationMetrics"]
 ): ResearchResult {
+  // Defensive extraction of keyMetrics if nested inside reasoning
+  let keyMetrics = parsed.keyMetrics as ResearchResult["keyMetrics"];
+  if (!keyMetrics && parsed.reasoning && typeof parsed.reasoning === "object") {
+    const r = parsed.reasoning as Record<string, unknown>;
+    if (r.keyMetrics && typeof r.keyMetrics === "object") {
+      keyMetrics = r.keyMetrics as ResearchResult["keyMetrics"];
+      delete r.keyMetrics;
+    }
+  }
+
+  // Defensive extraction of highlights if nested inside reasoning
+  let highlights = parsed.highlights as ResearchResult["highlights"];
+  if (!highlights && parsed.reasoning && typeof parsed.reasoning === "object") {
+    const r = parsed.reasoning as Record<string, unknown>;
+    if (r.highlights && typeof r.highlights === "object") {
+      highlights = r.highlights as ResearchResult["highlights"];
+      delete r.highlights;
+    }
+  }
+
+  // Set default values for keyMetrics if missing
+  const defaultMetrics = {
+    peRatio: "N/A",
+    revenueGrowth: "N/A",
+    profitMargin: "N/A",
+    debtToEquity: "N/A",
+    ...(keyMetrics || {})
+  };
+
+  // Set default values for highlights if missing
+  const defaultHighlights = {
+    companyOverview: "",
+    sector: "N/A",
+    marketCap: "N/A",
+    stockTicker: "N/A",
+    ...(highlights || {})
+  };
+
   return {
     verdict: String(parsed.verdict || "PASS"),
     confidence: String(parsed.confidence || "LOW"),
     summary: String(parsed.summary || ""),
-    highlights: parsed.highlights as ResearchResult["highlights"],
+    highlights: defaultHighlights,
     reasoning: parsed.reasoning as ResearchResult["reasoning"],
-    keyMetrics: parsed.keyMetrics as ResearchResult["keyMetrics"],
+    keyMetrics: defaultMetrics,
     analystNote: String(parsed.analystNote || ""),
     researchSteps,
     rawOutput: fallbackOutput,

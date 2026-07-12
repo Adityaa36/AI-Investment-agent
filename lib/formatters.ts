@@ -28,7 +28,7 @@
 
 /**
  * Strips everything that isn't a digit, dot, minus or e/E
- * and returns the parsed float (or NaN).
+ * and returns the parsed float (or NaN). Handles suffixes like T, B, M, K.
  */
 function parseNumeric(raw: string | number | undefined | null): number {
   if (raw === undefined || raw === null || raw === "" || raw === "N/A" || raw === "-") {
@@ -39,8 +39,27 @@ function parseNumeric(raw: string | number | undefined | null): number {
   const cleaned = String(raw)
     .trim()
     .replace(/[$,\s]/g, "")
-    .replace(/%$/, ""); // strip trailing % — caller decides what to do with it
-  return parseFloat(cleaned);
+    .replace(/%$/, ""); // strip trailing %
+
+  let multiplier = 1;
+  let numStr = cleaned;
+
+  if (/[tT]$/.test(cleaned)) {
+    multiplier = 1e12;
+    numStr = cleaned.slice(0, -1);
+  } else if (/[bB]$/.test(cleaned)) {
+    multiplier = 1e9;
+    numStr = cleaned.slice(0, -1);
+  } else if (/[mM]$/.test(cleaned)) {
+    multiplier = 1e6;
+    numStr = cleaned.slice(0, -1);
+  } else if (/[kK]$/.test(cleaned)) {
+    multiplier = 1e3;
+    numStr = cleaned.slice(0, -1);
+  }
+
+  const parsedVal = parseFloat(numStr);
+  return isNaN(parsedVal) ? NaN : parsedVal * multiplier;
 }
 
 /**
@@ -238,11 +257,13 @@ export function formatDebtEquity(raw: string | number | undefined): string {
  *      profit (small decimal)    → formatPercentage
  *   5. fallback: try large-number, else passthrough
  */
-export function formatMetricValue(key: string, raw: string | undefined): string {
-  if (!raw || raw.trim() === "" || raw === "N/A" || raw === "-") return "N/A";
+export function formatMetricValue(key: string, raw: string | number | null | undefined): string {
+  if (raw === undefined || raw === null) return "N/A";
+  const str = String(raw).trim();
+  if (str === "" || str === "N/A" || str === "-") return "N/A";
 
   const lk = key.toLowerCase();
-  const trimmed = raw.trim();
+  const trimmed = str;
 
   // 1. Debt-to-Equity
   if (lk.includes("debt") || lk === "de" || lk === "d/e") {
